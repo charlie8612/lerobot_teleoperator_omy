@@ -1,6 +1,7 @@
 import logging
 import math
 import struct
+from typing import Any
 
 from dynamixel_sdk import GroupSyncRead, PacketHandler, PortHandler
 
@@ -20,8 +21,20 @@ LEN_PRESENT_POSITION = 4
 ADDR_PRESENT_VELOCITY = 128
 
 # X-series operating modes (mirrors lerobot's omx_leader choices).
-OP_MODE_CURRENT = 0            # current/torque control — used for the gripper spring trigger
+OP_MODE_CURRENT = 0  # current/torque control — used for the gripper spring trigger
 OP_MODE_EXTENDED_POSITION = 4  # multi-turn: Present_Position does not wrap at 0/4095
+
+
+def raw_to_rad(raw: int, zero_offset: int, units_per_revolution: int) -> float:
+    """Convert a raw 4-byte Present_Position value to radians, centered on ``zero_offset``.
+
+    The raw value is interpreted as a signed 32-bit integer, so multi-turn readings
+    from Extended Position mode (outside 0-4095) convert correctly.
+    """
+    signed = struct.unpack("i", struct.pack("I", raw))[0]
+    centered = signed - zero_offset
+    return centered * 2.0 * math.pi / units_per_revolution
+
 
 # XC330-T181 current unit: N*m per Goal Current unit (from the model spec).
 XC330_T181_CURRENT_UNIT = 0.0006709470296015791
@@ -50,14 +63,20 @@ class OmyLeader(Teleoperator):
         super().__init__(config)
         self.config = config
         self._is_connected = False
-        self._port_handler: PortHandler | None = None
-        self._packet_handler: PacketHandler | None = None
-        self._sync_reader: GroupSyncRead | None = None
+        self._port_handler: Any = None  # dynamixel_sdk PortHandler, set on connect()
+        self._packet_handler: Any = (
+            None  # dynamixel_sdk PacketHandler, set on connect()
+        )
+        self._sync_reader: Any = None  # dynamixel_sdk GroupSyncRead, set on connect()
         self._prev_rad: list[float] | None = None
 
         self._joint_names = [
-            "joint_1", "joint_2", "joint_3",
-            "joint_4", "joint_5", "joint_6",
+            "joint_1",
+            "joint_2",
+            "joint_3",
+            "joint_4",
+            "joint_5",
+            "joint_6",
             "gripper",
         ]
 
@@ -100,7 +119,9 @@ class OmyLeader(Teleoperator):
         for mid in self.config.motor_ids:
             result, _ = packet.write1ByteTxRx(port, mid, ADDR_TORQUE_ENABLE, 0)
             if result != 0:
-                logger.warning(f"Motor {mid} torque disable failed: {packet.getTxRxResult(result)}")
+                logger.warning(
+                    f"Motor {mid} torque disable failed: {packet.getTxRxResult(result)}"
+                )
 
         gripper_mid = self.config.motor_ids[self.config.gripper_index]
 
@@ -115,7 +136,11 @@ class OmyLeader(Teleoperator):
         # maintained only while powered and resets to turn 0 at the next power-on, so park the
         # arm in a consistent rest pose before powering off to keep the zero reference valid.
         for mid in self.config.motor_ids:
-            mode = OP_MODE_CURRENT if mid == gripper_mid else self.config.arm_operating_mode
+            mode = (
+                OP_MODE_CURRENT
+                if mid == gripper_mid
+                else self.config.arm_operating_mode
+            )
             result, _ = packet.write1ByteTxRx(port, mid, ADDR_OPERATING_MODE, mode)
             if result != 0:
                 logger.warning(
@@ -133,7 +158,9 @@ class OmyLeader(Teleoperator):
                 logger.info(f"Gripper spring enabled on motor {gripper_mid}")
 
         # Set up the sync reader for Present_Position across all motors.
-        reader = GroupSyncRead(port, packet, ADDR_PRESENT_POSITION, LEN_PRESENT_POSITION)
+        reader = GroupSyncRead(
+            port, packet, ADDR_PRESENT_POSITION, LEN_PRESENT_POSITION
+        )
         for mid in self.config.motor_ids:
             if not reader.addParam(mid):
                 raise RuntimeError(f"Failed to add motor {mid} to sync reader")
@@ -207,7 +234,8 @@ class OmyLeader(Teleoperator):
             grip_vel = 0.0
 
         torque = (
-            -self.config.gripper_spring_stiffness * (grip_pos - self.config.gripper_spring_neutral_rad)
+            -self.config.gripper_spring_stiffness
+            * (grip_pos - self.config.gripper_spring_neutral_rad)
             - self.config.gripper_spring_damping * grip_vel
         )
 
@@ -249,16 +277,27 @@ class OmyLeader(Teleoperator):
 
         positions = []
         for mid in self.config.motor_ids:
-            if not self._sync_reader.isAvailable(mid, ADDR_PRESENT_POSITION, LEN_PRESENT_POSITION):
+            if not self._sync_reader.isAvailable(
+                mid, ADDR_PRESENT_POSITION, LEN_PRESENT_POSITION
+            ):
                 if self._prev_rad is not None:
-                    logger.warning(f"Motor {mid} data not available, using previous reading")
+                    logger.warning(
+                        f"Motor {mid} data not available, using previous reading"
+                    )
                     return list(self._prev_rad)
-                raise RuntimeError(f"Motor {mid} data not available (no previous reading)")
-            raw = self._sync_reader.getData(mid, ADDR_PRESENT_POSITION, LEN_PRESENT_POSITION)
-            signed = struct.unpack("i", struct.pack("I", raw))[0]
-            centered = signed - self.config.position_zero_offset
-            rad = centered * 2.0 * math.pi / self.config.units_per_revolution
-            positions.append(rad)
+                raise RuntimeError(
+                    f"Motor {mid} data not available (no previous reading)"
+                )
+            raw = self._sync_reader.getData(
+                mid, ADDR_PRESENT_POSITION, LEN_PRESENT_POSITION
+            )
+            positions.append(
+                raw_to_rad(
+                    raw,
+                    self.config.position_zero_offset,
+                    self.config.units_per_revolution,
+                )
+            )
 
         alpha = self.config.smoothing_factor
         if alpha > 0 and self._prev_rad is not None:

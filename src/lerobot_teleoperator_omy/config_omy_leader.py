@@ -49,14 +49,15 @@ class OmyLeaderBaseConfig:
     # torque, letting the operator squeeze the trigger and have it spring back to
     # an open position on its own (mirrors the ROBOTIS ROS 2 spring controller).
     gripper_spring_enabled: bool = True
-    gripper_spring_stiffness: float = 0.06   # N*m/rad
+    gripper_spring_stiffness: float = 0.06  # N*m/rad
     gripper_spring_neutral_rad: float = 0.0  # open position
-    gripper_spring_damping: float = 0.004    # N*m*s/rad
-    gripper_spring_max_current: int = 150    # Goal Current units (safety clamp)
+    gripper_spring_damping: float = 0.004  # N*m*s/rad
+    gripper_spring_max_current: int = 150  # Goal Current units (safety clamp)
 
 
 @TeleoperatorConfig.register_subclass("omy_leader")
 @dataclass
 class OmyLeaderConfig(TeleoperatorConfig, OmyLeaderBaseConfig):
     """Configuration for the ROBOTIS OMY-L100 leader arm teleoperator."""
+
     pass

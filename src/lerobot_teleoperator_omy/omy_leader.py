@@ -12,11 +12,16 @@ from .config_omy_leader import OmyLeaderConfig
 logger = logging.getLogger(__name__)
 
 # X-series Dynamixel control table (XH540-W150, XC330-T288, XC330-T181)
+ADDR_OPERATING_MODE = 11
 ADDR_TORQUE_ENABLE = 64
 ADDR_GOAL_CURRENT = 102
 ADDR_PRESENT_POSITION = 132
 LEN_PRESENT_POSITION = 4
 ADDR_PRESENT_VELOCITY = 128
+
+# X-series operating modes (mirrors lerobot's omx_leader choices).
+OP_MODE_CURRENT = 0            # current/torque control — used for the gripper spring trigger
+OP_MODE_EXTENDED_POSITION = 4  # multi-turn: Present_Position does not wrap at 0/4095
 
 # XC330-T181 current unit: N*m per Goal Current unit (from the model spec).
 XC330_T181_CURRENT_UNIT = 0.0006709470296015791
@@ -30,8 +35,12 @@ class OmyLeader(Teleoperator):
     returns each joint's native angle in radians as ``joint_<n>.pos`` /
     ``gripper.pos``. No ROS 2 stack is required.
 
-    The gripper motor optionally runs a spring effect (Current Control mode) so
-    the trigger returns to the open position on its own.
+    On connect the arm joints are put in Extended Position (multi-turn) mode so a
+    joint can rotate past 360 deg without the encoder wrapping at 0/4095 (the same
+    choice as lerobot's ``omx_leader``); the gripper is kept in Current mode and
+    optionally runs a spring effect so the trigger returns to the open position on
+    its own. The multi-turn count is only kept while powered (X-series have a
+    single-turn absolute encoder), so park the arm in a rest pose before power-off.
     """
 
     config_class = OmyLeaderConfig
@@ -93,10 +102,29 @@ class OmyLeader(Teleoperator):
             if result != 0:
                 logger.warning(f"Motor {mid} torque disable failed: {packet.getTxRxResult(result)}")
 
+        gripper_mid = self.config.motor_ids[self.config.gripper_index]
+
+        # Put the arm joints in Extended Position (multi-turn) mode, and the gripper in
+        # Current mode for the spring trigger — the same split lerobot's ROBOTIS-authored
+        # omx_leader uses. In single-turn position mode the encoder wraps at 0/4095, so a
+        # joint rotated past 360 deg would make Present_Position jump; Extended mode counts
+        # full turns instead. Operating_Mode is in EEPROM and can only be written while
+        # torque is disabled (done above).
+        #
+        # NOTE: X-series have only a single-turn *absolute* encoder. The multi-turn count is
+        # maintained only while powered and resets to turn 0 at the next power-on, so park the
+        # arm in a consistent rest pose before powering off to keep the zero reference valid.
+        for mid in self.config.motor_ids:
+            mode = OP_MODE_CURRENT if mid == gripper_mid else self.config.arm_operating_mode
+            result, _ = packet.write1ByteTxRx(port, mid, ADDR_OPERATING_MODE, mode)
+            if result != 0:
+                logger.warning(
+                    f"Motor {mid} set Operating_Mode={mode} failed: {packet.getTxRxResult(result)}"
+                )
+
         # Enable torque on the gripper motor only, so it can apply the spring force.
         # The motor is in Current Control mode, so enabling torque lets us write
         # Goal Current without commanding a position.
-        gripper_mid = self.config.motor_ids[self.config.gripper_index]
         if self.config.gripper_spring_enabled:
             result, _ = packet.write1ByteTxRx(port, gripper_mid, ADDR_TORQUE_ENABLE, 1)
             if result != 0:

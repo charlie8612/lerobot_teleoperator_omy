@@ -35,6 +35,11 @@ class OmyLeaderBaseConfig:
     # X-series center position (raw units) treated as 0 rad.
     position_zero_offset: int = 2048
 
+    # Operating mode written to the arm joints on connect. 4 = Extended Position
+    # (multi-turn) so a joint can rotate past 360 deg without Present_Position
+    # wrapping at 0/4095. The gripper is always put in Current mode for the spring.
+    arm_operating_mode: int = 4
+
     # Exponential moving-average smoothing on the joint readings.
     # 0.0 = no smoothing, 0.9 = very smooth (more lag).
     smoothing_factor: float = 0.0
